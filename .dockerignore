@@ -1,0 +1,4 @@
+# The image needs only the staged CLI jar; keep the rest of the repository out of
+# the build context (sources, target/ directories, caches).
+*
+!validator_cli.jar

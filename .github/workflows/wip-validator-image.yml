@@ -1,0 +1,129 @@
+name: WIP validator_cli.jar and image
+
+# Builds validator_cli.jar from the current commit of itb-rest, uploads it as the
+# asset of this fork's `wip` release, and publishes it as a container image:
+#
+#   ghcr.io/worldhealthorganization/fhir-validator:ci-build            moving: the latest build of the branch
+#   ghcr.io/worldhealthorganization/fhir-validator:itb-rest-<sha>      pinned to the commit
+#
+# Triggered on every push to itb-rest, and on demand from the Actions tab.
+#
+# Guarded to the WorldHealthOrganization fork so this never runs, or tries to
+# publish, on upstream hapifhir/org.hl7.fhir.core if the file is ever merged
+# there. When it moves upstream, the trigger becomes the release tag and the
+# image name follows the repository.
+
+on:
+  push:
+    branches:
+      - itb-rest
+    paths-ignore:
+      - '**.md'
+      - 'documentation/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: wip-validator-image
+  cancel-in-progress: true
+
+env:
+  # image references must be lower case; the owner login is not
+  IMAGE: ghcr.io/worldhealthorganization/fhir-validator
+
+jobs:
+  build-and-publish:
+    name: Build validator_cli.jar, publish the `wip` asset and the image
+    if: github.repository == 'WorldHealthOrganization/org.hl7.fhir.core'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@ec9f2d5744a09debf3a187a3f4f675c53b671911 # v2.13.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4.6.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Build validator_cli (skip tests)
+        run: mvn -B -ntp package -pl org.hl7.fhir.validation.cli -am -DskipTests
+
+      - name: Stage validator_cli.jar
+        id: stage
+        run: |
+          set -euo pipefail
+          JAR=$(ls org.hl7.fhir.validation.cli/target/org.hl7.fhir.validation.cli-*-SNAPSHOT.jar 2>/dev/null \
+                | grep -v 'tests' | head -1)
+          if [ -z "${JAR:-}" ]; then
+            echo "No CLI jar found under org.hl7.fhir.validation.cli/target/" >&2
+            ls -la org.hl7.fhir.validation.cli/target/ || true
+            exit 1
+          fi
+          cp "$JAR" validator_cli.jar
+          ls -la validator_cli.jar
+          echo "jar=validator_cli.jar" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short=10 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure `wip` release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh release view wip >/dev/null 2>&1; then
+            gh release create wip \
+              --title "WIP build" \
+              --notes "Rolling build of validator_cli.jar from the latest commit on itb-rest. Asset is replaced on every push; the same build is published as ghcr.io/worldhealthorganization/fhir-validator:ci-build." \
+              --prerelease
+          fi
+
+      - name: Upload validator_cli.jar to the `wip` release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload wip ${{ steps.stage.outputs.jar }} --clobber
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Build and push the image
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:ci-build
+            ${{ env.IMAGE }}:itb-rest-${{ steps.stage.outputs.sha }}
+          labels: |
+            org.opencontainers.image.title=FHIR validator (server mode, ITB integration)
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=HL7 FHIR validator_cli.jar in server mode with the /itb GITB services, built from the itb-rest branch
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "## Published"
+            echo
+            echo "- release asset: \`wip\` / validator_cli.jar"
+            echo "- image: \`${IMAGE}:ci-build\`"
+            echo "- image: \`${IMAGE}:itb-rest-${{ steps.stage.outputs.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
