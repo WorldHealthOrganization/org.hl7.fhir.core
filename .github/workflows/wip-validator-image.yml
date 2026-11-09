@@ -1,12 +1,15 @@
 name: WIP validator_cli.jar and image
 
-# Builds validator_cli.jar from the current commit of itb-rest, uploads it as the
-# asset of this fork's `wip` release, and publishes it as a container image:
+# Builds validator_cli.jar from the pushed commit, uploads it as the asset of this
+# fork's `wip` release, and publishes it as a container image:
 #
-#   ghcr.io/worldhealthorganization/fhir-validator:ci-build            moving: the latest build of the branch
-#   ghcr.io/worldhealthorganization/fhir-validator:itb-rest-<sha>      pinned to the commit
+#   ghcr.io/worldhealthorganization/fhir-validator:ci-build            moving: the latest build
+#   ghcr.io/worldhealthorganization/fhir-validator:<branch>-<sha>      pinned to the commit
 #
-# Triggered on every push to itb-rest, and on demand from the Actions tab.
+# Lives on its own branch, itb-rest-docker-image, which is itb-rest plus this
+# file and the Dockerfile. To build a newer validator: merge itb-rest into that
+# branch and push; the push is the trigger. (A manual run from the Actions tab
+# is only offered once this file is on the default branch.)
 #
 # Guarded to the WorldHealthOrganization fork so this never runs, or tries to
 # publish, on upstream hapifhir/org.hl7.fhir.core if the file is ever merged
@@ -16,7 +19,7 @@ name: WIP validator_cli.jar and image
 on:
   push:
     branches:
-      - itb-rest
+      - itb-rest-docker-image
     paths-ignore:
       - '**.md'
       - 'documentation/**'
@@ -73,6 +76,8 @@ jobs:
           ls -la validator_cli.jar
           echo "jar=validator_cli.jar" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short=10 HEAD)" >> "$GITHUB_OUTPUT"
+          # branch name as an image tag: no slashes
+          echo "branch=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
 
       - name: Ensure `wip` release exists
         env:
@@ -82,7 +87,7 @@ jobs:
           if ! gh release view wip >/dev/null 2>&1; then
             gh release create wip \
               --title "WIP build" \
-              --notes "Rolling build of validator_cli.jar from the latest commit on itb-rest. Asset is replaced on every push; the same build is published as ghcr.io/worldhealthorganization/fhir-validator:ci-build." \
+              --notes "Rolling build of validator_cli.jar from the latest pushed commit. Asset is replaced on every push; the same build is published as ghcr.io/worldhealthorganization/fhir-validator:ci-build." \
               --prerelease
           fi
 
@@ -109,12 +114,12 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:ci-build
-            ${{ env.IMAGE }}:itb-rest-${{ steps.stage.outputs.sha }}
+            ${{ env.IMAGE }}:${{ steps.stage.outputs.branch }}-${{ steps.stage.outputs.sha }}
           labels: |
             org.opencontainers.image.title=FHIR validator (server mode, ITB integration)
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.description=HL7 FHIR validator_cli.jar in server mode with the /itb GITB services, built from the itb-rest branch
+            org.opencontainers.image.description=HL7 FHIR validator_cli.jar in server mode with the /itb GITB services, built from ${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -125,5 +130,5 @@ jobs:
             echo
             echo "- release asset: \`wip\` / validator_cli.jar"
             echo "- image: \`${IMAGE}:ci-build\`"
-            echo "- image: \`${IMAGE}:itb-rest-${{ steps.stage.outputs.sha }}\`"
+            echo "- image: \`${IMAGE}:${{ steps.stage.outputs.branch }}-${{ steps.stage.outputs.sha }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
